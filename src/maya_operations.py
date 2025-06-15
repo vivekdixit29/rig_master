@@ -269,3 +269,17 @@ class MayaOperations:
                 self.rename_selected_object(f"{selected_objects[obj]}_offset_grp")
                 grp = self.get_selected_objects()
                 self.parent_constrain(follicle_node, grp, mo=True)
+
+
+    @staticmethod
+    def get_object_based_on_type(type_flag):
+        """
+        Returns a list of objects in the scene based on the given type.
+
+        Args:
+            type_flag (str): The type of object to search for (e.g., "mesh", "nurbsCurve", "joint").
+
+        Returns:
+            list: A list of object names matching the given type.
+        """
+        return cmds.ls(type=type_flag)

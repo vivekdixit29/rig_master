@@ -1,69 +1,95 @@
 """
-This module defines the `RigMasterUi` class which creates the user interface layout
-for the Rig Master tool using PySide6. The layout includes UI components for selecting
-connection types and performing mesh or control-based operations in Autodesk Maya.
+rig_master_ui.py
+
+This module defines the `RigMasterUi` class, a PySide6-based user interface for 
+controlling rigging operations within Maya.
+
+The interface includes:
+    - Dropdown for selecting connection types
+    - Radio buttons for specifying the creation mode (Mesh, Ctrl, Ctrl + Mesh)
+    - Checkboxes for enabling additional features (Polygon, Surface, Combine)
+    - A button to trigger the rig creation process
+
+This UI is intended to be integrated into a Maya rigging pipeline and provides
+a clean, interactive way to define how geometry or controls are created and connected.
 """
 
 from PySide6 import QtWidgets
 
 class RigMasterUi(QtWidgets.QMainWindow):
     """
-    Defines the UI layout for the Rig Master tool.
+    A custom PySide6 UI window for rigging-related operations in Maya.
 
-    This class sets up the main window layout, including:
-        - A dropdown to choose the type of connection (e.g., Follicle, Surface Attach).
-        - Radio buttons to choose connection with Mesh or Control.
-        - A push button to trigger the creation logic.
+    This UI allows users to:
+        - Select a connection type via dropdown
+        - Choose between different control creation modes (Mesh, Ctrl, Ctrl + Mesh)
+        - Enable options such as Polygon, Surface, and Combine
+        - Trigger an action using the 'Create' button
 
-    Attributes:
-        connection_combobox (QComboBox): Dropdown for selecting connection type.
-        mesh_radiobtn (QRadioButton): Radio button to select Mesh connection.
-        ctrl_radiobtn (QRadioButton): Radio button to select Control connection.
-        create_btn (QPushButton): Button to initiate the operation.
+    Designed to be used as part of a larger rigging pipeline where these inputs 
+    control how objects are attached or manipulated within Maya.
     """
 
-    def setup_ui(self):
+    def setupUi(self):
         """
-        Initializes and arranges the UI widgets inside the main window.
+        Initializes and sets up the UI layout and widgets for the RigMaster tool.
 
-        Widgets created:
-            - QLabel: "Connection Type"
-            - QComboBox: Dropdown for selecting operation
-            - QGroupBox: Contains mesh/control radio buttons
-            - QRadioButton: "Mesh"
-            - QRadioButton: "Ctrl"
-            - QPushButton: "Create"
-            - QFrame: Horizontal separator
+        Widgets:
+            - QComboBox: Connection Type selection
+            - QRadioButtons: Create With (Mesh, Ctrl, Ctrl + Mesh)
+            - QCheckBoxes: Polygon, Surface, Combine options
+            - QPushButton: Create
 
-        The layout is assigned to the central widget of the QMainWindow.
+        Layout is structured vertically with appropriate grouping and spacing.
         """
-        central_widget = QtWidgets.QWidget()
-        final_layout = QtWidgets.QVBoxLayout(central_widget)
+        self.resize(300, 218)
 
-        self.connection_type_label = QtWidgets.QLabel("Connection Type")
+        # Central Widget
+        self.centralwidget = QtWidgets.QWidget()
+        self.verticalLayout = QtWidgets.QVBoxLayout()
+
+        # Connection Type Row
+        self.connection_layout = QtWidgets.QHBoxLayout()
+        self.connection_label = QtWidgets.QLabel("Connection Type :")
         self.connection_combobox = QtWidgets.QComboBox()
-        self.connection_type_layout = QtWidgets.QHBoxLayout()
-        self.connection_type_layout.addWidget(self.connection_type_label)
-        self.connection_type_layout.addWidget(self.connection_combobox)
+        self.connection_layout.addWidget(self.connection_label)
+        self.connection_layout.addWidget(self.connection_combobox)
+        self.verticalLayout.addLayout(self.connection_layout)
 
-        self.connect_grpbox = QtWidgets.QGroupBox()
-        self.connect_grpbox.setTitle("Connect With")
-        self.mesh_radiobtn = QtWidgets.QRadioButton("Mesh")
-        self.ctrl_radiobtn = QtWidgets.QRadioButton("Ctrl")
-        self.connect_layout = QtWidgets.QHBoxLayout()
-        self.connect_layout.addWidget(self.mesh_radiobtn)
-        self.connect_layout.addWidget(self.ctrl_radiobtn)
-        self.connect_grpbox.setLayout(self.connect_layout)
+        # Radio Button Group: Create With
+        self.groupBox = QtWidgets.QGroupBox("Create With")
+        self.horizontalLayout = QtWidgets.QHBoxLayout(self.groupBox)
 
-        separator = QtWidgets.QFrame()
-        separator.setFrameShape(QtWidgets.QFrame.HLine)
-        separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        self.mesh_btn = QtWidgets.QRadioButton("Mesh", self.groupBox)
+        self.cruve_btn = QtWidgets.QRadioButton("Ctrl", self.groupBox)
+        self.ctrl_mesh_btn = QtWidgets.QRadioButton("Ctrl + Mesh", self.groupBox)
 
+        self.horizontalLayout.addWidget(self.mesh_btn)
+        self.horizontalLayout.addWidget(self.cruve_btn)
+        self.horizontalLayout.addWidget(self.ctrl_mesh_btn)
+        self.verticalLayout.addWidget(self.groupBox)
+
+        # Horizontal Line Separator
+        self.seprator = QtWidgets.QFrame()
+        self.seprator.setFrameShape(QtWidgets.QFrame.HLine)
+        self.seprator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        self.verticalLayout.addWidget(self.seprator)
+
+        # Checkboxes: Options
+        self.horizontalLayout_3 = QtWidgets.QHBoxLayout()
+        self.poly_chkbox = QtWidgets.QCheckBox("Polygon")
+        self.surface_chkbox = QtWidgets.QCheckBox("Surface")
+        self.combine_chkbox = QtWidgets.QCheckBox("Combine")
+
+        self.horizontalLayout_3.addWidget(self.poly_chkbox)
+        self.horizontalLayout_3.addWidget(self.surface_chkbox)
+        self.horizontalLayout_3.addWidget(self.combine_chkbox)
+        self.verticalLayout.addLayout(self.horizontalLayout_3)
+
+        # Create Button
         self.create_btn = QtWidgets.QPushButton("Create")
+        self.verticalLayout.addWidget(self.create_btn)
 
-        final_layout.addLayout(self.connection_type_layout)
-        final_layout.addWidget(self.connect_grpbox)
-        final_layout.addWidget(separator)
-        final_layout.addWidget(self.create_btn)
-
-        self.setCentralWidget(central_widget)
+        # Finalize Layout
+        self.centralwidget.setLayout(self.verticalLayout)
+        self.setCentralWidget(self.centralwidget)
