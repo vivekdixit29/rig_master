@@ -283,3 +283,97 @@ class MayaOperations:
             list: A list of object names matching the given type.
         """
         return cmds.ls(type=type_flag)
+    
+    def create_uv_pin_setup(self, shape_node, sel, sel_uv_pin=None):
+        """
+        Creates a UV pin setup in Maya by associating a locator with UV coordinates on a mesh.
+
+        Args:
+            shape_node (str): The name of the shape node (mesh) to attach the UV pin.
+            sel (list): A list of selected vertices to convert into UV space.
+            sel_uv_pin (str, optional): An existing UV pin node to use. If None, a new one is created.
+
+        Returns:
+            tuple:
+                - str: The name of the locator created and positioned using UV pin.
+                - str: The UV pin node used or created.
+        """
+        uv = cmds.polyListComponentConversion(sel, fromVertex=True, toUV=True)
+        uv = cmds.filterExpand(uv, selectionMask=35)
+        u_coords, v_coords = cmds.polyEditUV(uv[0], query=True)
+        if sel_uv_pin:
+            uvpin = sel_uv_pin
+        else:
+            uvpin = cmds.createNode("uvPin", name="uv_Test")
+        loc_shape = cmds.spaceLocator(name="uvPin_loc")[0]
+
+        indices = cmds.getAttr(f"{uvpin}.outputMatrix", multiIndices=True)
+        if indices:
+            cmds.setAttr(f"{uvpin}.coordinate[{len(indices)}].coordinateU", u_coords)
+            cmds.setAttr(f"{uvpin}.coordinate[{len(indices)}].coordinateV", v_coords)
+            cmds.connectAttr(f"{uvpin}.outputMatrix[{len(indices)}]", f"{loc_shape}.offsetParentMatrix", force=True)
+        else:
+            cmds.setAttr(f"{uvpin}.coordinate[0].coordinateU", u_coords)
+            cmds.setAttr(f"{uvpin}.coordinate[0].coordinateV", v_coords)
+            cmds.connectAttr(f"{uvpin}.outputMatrix[0]", f"{loc_shape}.offsetParentMatrix", force=True)
+
+        if not cmds.isConnected(f"{shape_node}.worldMesh[0]", f"{uvpin}.deformedGeometry"):
+            cmds.connectAttr(f"{shape_node}.worldMesh[0]", f"{uvpin}.deformedGeometry", force=True)
+
+        cmds.setAttr(f"{loc_shape}.translate", 0, 0, 0, type="double3")
+        cmds.setAttr(f"{loc_shape}.rotate", 0, 0, 0, type="double3")
+
+        return loc_shape, uvpin
+
+    def create_connection_with_bones(self, master_cluster, current_cluster, uv_pin, ctrl_grp, bone):
+        """
+        Connects UV pin geometry to a cluster's output geometry and links a control group 
+        to influence a skinCluster using the given bone.
+
+        Args:
+            master_cluster (str): The cluster whose output geometry connects to the UV pin.
+            current_cluster (str): The cluster influenced by the skinCluster.
+            uv_pin (str): The UV pin node to be connected.
+            ctrl_grp (str): The control group whose inverse matrix will bind the skin.
+            bone (str): The bone joint that should influence the current cluster.
+        """
+        cmds.connectAttr(f"{master_cluster}.outputGeometry[0]", f"{uv_pin}.deformedGeometry", force=True)
+        influences = cmds.skinCluster(current_cluster, query=True, influence=True)
+        if bone in influences:
+            index = influences.index(bone)
+            cmds.connectAttr(f"{ctrl_grp}.inverseMatrix", f"{current_cluster}.bindPreMatrix[{index}]", force=True)
+
+    def create_ctrl_setup(self, joint_name):
+        """
+        Creates a control curve, groups it twice, aligns it to a joint, and constrains 
+        the joint to follow the control.
+
+        Args:
+            joint_name (str): The name of the joint to be controlled.
+
+        Returns:
+            str: The name of the top-level group containing the control curve.
+        """
+        curv_cmd = "curve -d 1 -p 1 1 -1 -p 1 -1 -1 -p -1 -1 -1 -p -1 1 -1 -p 1 1 -1 -p 1 1 1 -p -1 1 1 -p -1 1 -1 -p -1 -1 -1 -p -1 -1 1 -p -1 1 1 -p -1 -1 1 -p 1 -1 1 -p 1 1 1 -p 1 -1 1 -p 1 -1 -1 -k 0 -k 1 -k 2 -k 3 -k 4 -k 5 -k 6 -k 7 -k 8 -k 9 -k 10 -k 11 -k 12 -k 13 -k 14 -k 15"
+        mel.eval(curv_cmd)
+        crv_name = self.get_selected_component()[0]
+        self.set_attribute(f"{crv_name}.scaleX", 0.1)
+        self.set_attribute(f"{crv_name}.scaleY", 0.1)
+        self.set_attribute(f"{crv_name}.scaleZ", 0.1)
+        cmds.select(crv_name)
+        self.freeze_trnasfrom()
+
+        mel.eval("doGroup 0 1 1")
+        mel.eval("doGroup 0 1 1")
+        grp_name = self.get_selected_component()
+        coonstraint_name = self.parent_constrain(joint_name, grp_name)
+        cmds.delete(coonstraint_name)
+        self.parent_constrain(crv_name, joint_name)
+        return grp_name[0]
+
+    def freeze_trnasfrom(self):
+        """
+        Freezes the transformations (translate, rotate, scale) on the currently selected object in Maya.
+        """
+        cmds.makeIdentity(apply=True)
+
