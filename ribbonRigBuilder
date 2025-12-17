@@ -1,0 +1,439 @@
+# ribbonRigBuilder
+from maya import mel, cmds
+import maya.api.OpenMaya as om
+import re
+
+
+def create_plane_between_locators(loc1, loc2, name, joint_count=3):
+    """To Create nurbs-plane"""
+    width = 0.5
+    # Get world positions
+    p1 = om.MVector(*cmds.xform(loc1, q=True, ws=True, t=True))
+    p2 = om.MVector(*cmds.xform(loc2, q=True, ws=True, t=True))
+
+    # Compute length
+    length = (p2 - p1).length()
+    spanU = joint_count
+    plane = cmds.nurbsPlane(
+        w=length,
+        lr=width / length,
+        axis=[1, 0, 0],
+        d=3,
+        ch=False,
+        u=spanU,
+        name=f"{name}_main_ik_plane"
+    )[0]
+
+    mid = (p1 + p2) * 0.5
+    cmds.xform(plane, ws=True, t=[mid.x, mid.y, mid.z])
+
+    # Aim vector (locator1 → locator2)
+    aim = (p2 - p1).normalize()
+    up = om.MVector(0, 0, 1)  # world Y axis
+
+    # If aim is vertical, give it a slight offset to avoid zero-length cross
+    if abs(aim * up) > 0.999:
+        aim = om.MVector(aim.x + 0.0001, aim.y, aim.z).normalize()
+
+    # Side axis
+    side = (up ^ aim).normalize()
+    # Recompute orthogonal up
+    up = (aim ^ side).normalize()
+
+    # Build orientation matrix
+    m = om.MMatrix([
+        side.x, side.y, side.z, 0,
+        up.x, up.y, up.z, 0,
+        aim.x, aim.y, aim.z, 0,
+        0, 0, 0, 1
+    ])
+
+    # Convert to Euler
+    euler = om.MTransformationMatrix(m).rotation()
+
+    cmds.xform(plane, ws=True, rotation=[
+        om.MAngle(euler.x).asDegrees(),
+        om.MAngle(euler.y).asDegrees(),
+        om.MAngle(euler.z).asDegrees()
+    ])
+
+    nurbs_shape = cmds.listRelatives(plane, ap=False, shapes=True)[0]
+    main_ik_bone = main_ik_setup_creation(name, joint_count, nurbs_shape)
+    secondary_nurbs_plane = sub_ik_ctrl_creation(name, 3, plane, joint_count)
+    create_skin(secondary_nurbs_plane, main_ik_bone)
+    create_fk_setup(name, joint_count, plane)
+    # create_master_ctrl(name, loc2, loc1)
+    # wrap_up(name)
+    return plane
+
+
+def main_ik_setup_creation(name, ik_count, main_nurbs):
+    jt_names = []
+    main_ik_jnt_grps, main_ctrl_grps = [], []
+    span_u_multiplier = 1 / ik_count
+    for ctrl in range(ik_count+1):
+        crv_name = f"{name}_ik_ctrl_{ctrl + 1:02d}"
+        mel.eval("circle -ch on -o on -nr 0 1 0 -r 1.5 ;")
+        cmds.rename(crv_name)
+        color_curve(crv_name, 1.0, 0.5, 0.0)
+        main_ctrl_grp, conn_ctrl_grp = create_grp_hierarchy(crv_name)
+        conn_ctrl_grp = f"{main_ctrl_grp}|{conn_ctrl_grp}"
+        main_ctrl_grps.append(main_ctrl_grp)
+
+        jt_name = f"{name}_ik_jnt_{ctrl + 1:02d}"
+        cmds.joint(n=jt_name, radius=.3)
+        main_ik_jnt_grp, _ = create_grp_hierarchy(jt_name, crv_name)
+        main_ik_jnt_grps.append(main_ik_jnt_grp)
+
+        cmds.parentConstraint(crv_name, jt_name, mo=True)
+
+        span_u_value = span_u_multiplier * ctrl
+        create_connection_with_nurbs_plane(conn_ctrl_grp, span_u_value, main_nurbs)
+        jt_names.append(jt_name)
+
+    cmds.select(main_ik_jnt_grps)
+    mel.eval("doGroup 0 1 1;")
+    cmds.rename(f'{name}_main_ik_jnt_grp')
+    cmds.select(main_ctrl_grps)
+    mel.eval("doGroup 0 1 1;")
+    cmds.rename(f'{name}_main_ik_ctrl_grp')
+    return jt_names
+
+
+def create_joint(nurbs_shape, joint_count, name):
+    joint_main_grps = []
+    joint_name = []
+    ctrl_main_grps = []
+    parameter_u_value = 0
+    span_u = 1 / (joint_count - 1)
+    for jnt in range(joint_count):
+        follicle_node, follicle_shape = create_follicle_system(nurbs_shape, parameter_u_value)
+        parameter_u_value += span_u
+        jt_name = f"{name}_ik_jnt_{jnt + 1:02d}"
+        cmds.joint(n=jt_name, radius=.5)
+        main_grp, _ = create_grp_hierarchy(jt_name, follicle_shape)
+        joint_main_grps.append(main_grp)
+        ctrl_main_grps.append(nurb_cricle_ctrl(jt_name, 1.0, 0.0, .5))
+        cmds.delete(follicle_node)
+        joint_name.append(jt_name)
+
+    cmds.select(joint_main_grps)
+    mel.eval("doGroup 0 1 1;")
+    cmds.select(ctrl_main_grps)
+    mel.eval("doGroup 0 1 1;")
+    return joint_name
+
+
+def create_follicle_system(nurbs_shape, parameter_u_value):
+    follicle_shape = cmds.createNode("follicle", n="follicle")
+    follicle_node = cmds.listRelatives(follicle_shape, ap=True, shapes=False)[0]
+    cmds.connectAttr(f"{nurbs_shape}.worldMatrix", f"{follicle_shape}.inputWorldMatrix")
+    cmds.connectAttr(f"{nurbs_shape}.local", f"{follicle_shape}.inputSurface")
+    cmds.connectAttr(f"{follicle_shape}.outRotate", f"{follicle_node}.rotate", force=True)
+    cmds.connectAttr(f"{follicle_shape}.outTranslate", f"{follicle_node}.translate", force=True)
+    cmds.setAttr(f"{follicle_node}.parameterU", parameter_u_value)
+    cmds.setAttr(f"{follicle_node}.parameterV", 0.5)
+    return follicle_node, follicle_shape
+
+
+# def create_grp_hierarchy(obj, parent_obj=None):
+#     cmds.select(obj)
+#     mel.eval("doGroup 0 1 1;")
+#     cmds.rename(f"{obj.rsplit('_', 1)[0]}_offset_grp")
+#     mel.eval("doGroup 0 1 1;")
+#     cmds.rename(f"{obj.rsplit('_', 1)[0]}_conn_grp")
+#     conn_grp = cmds.ls(sl=True)
+#     mel.eval("doGroup 0 1 1;")
+#     cmds.rename(f"{obj.rsplit('_', 1)[0]}_grp")
+#     main_grp = cmds.ls(sl=True)
+#     if parent_obj:
+#         constraint_node = cmds.pointConstraint(parent_obj, main_grp)
+#         cmds.delete(constraint_node)
+#     try:
+#         cmds.parent(main_grp, w=True)
+#     except RuntimeError:
+#         pass
+#     # return cmds.ls(sl=True)[0]
+#     return cmds.ls(sl=True)[0], cmds.listRelatives(cmds.ls(sl=True)[0], children=True)[0]
+
+
+def create_grp_hierarchy(obj, parent_obj=None):
+    cmds.select(obj)
+    mel.eval("doGroup 0 1 1;")
+    cmds.rename(f"{obj}_offset_grp")
+    mel.eval("doGroup 0 1 1;")
+    cmds.rename(f"{obj}_conn_grp")
+    conn_grp = cmds.ls(sl=True)
+    mel.eval("doGroup 0 1 1;")
+    cmds.rename(f"{obj}_grp")
+    main_grp = cmds.ls(sl=True)
+    if parent_obj:
+        constraint_node = cmds.pointConstraint(parent_obj, main_grp)
+        cmds.delete(constraint_node)
+    try:
+        cmds.parent(main_grp, w=True)
+    except RuntimeError:
+        pass
+    return cmds.ls(sl=True)[0], cmds.listRelatives(cmds.ls(sl=True)[0], children=True)[0]
+
+
+
+def nurb_cricle_ctrl(crv_name, red, green, blue):
+    mel.eval("circle -ch on -o on -nr 0 0 1 -r 2 ;")
+    cmds.rename(crv_name)
+    color_curve(crv_name, red, green, blue)
+
+def color_curve(crv_name, red, green, blue):
+    cmds.setAttr(crv_name + ".overrideEnabled", 1)
+    cmds.setAttr(crv_name + ".overrideRGBColors", 1)
+    cmds.setAttr(crv_name + ".overrideColorRGB", red, green, blue, type="double3")
+
+
+def sub_ik_ctrl_creation(name, sub_ik_count, main_nurbs, main_ik_count):
+    start_ctrl = 1
+    sub_ik_ctrl_main_grps, sub_ik_jnt_main_grps = [], []
+
+    duplicate_cmd = "duplicate -rr"
+    hexa_curve = """curve -d 1
+            -p 1 0 0
+            -p 0.5 0.866025 0
+            -p -0.5 0.866025 0
+            -p -1 0 0
+            -p -0.5 -0.866025 0
+            -p 0.5 -0.866025 0
+            -p 1 0 0;"""
+
+    cmds.select(main_nurbs)
+    mel.eval(duplicate_cmd)
+    cmds.rename(f"{name}_sub_ik_plane")
+    sub_ctrl_surface = cmds.ls(sl=True)[0]
+
+    cmds.delete(sub_ctrl_surface, ch=True)
+    cmds.rebuildSurface(main_nurbs, spansU=main_ik_count, sv=1)
+    lower_span_u_value = 0
+    span_u_value = 1 / main_ik_count
+    higher_u_value = span_u_value
+
+    for main_ctrl in range(main_ik_count):
+        dist_btw_2_ctrl = (higher_u_value - lower_span_u_value)/(sub_ik_count - 1)
+        sub_ik_count_loop = sub_ik_count - 1 if main_ctrl +1 < main_ik_count else sub_ik_count
+        for ctrl in range(sub_ik_count_loop):
+            sub_span_u_value = round(lower_span_u_value + (dist_btw_2_ctrl * ctrl), 5)
+            if sub_span_u_value <= 1.0:
+                crv_name = f"{name}_ctrl_{start_ctrl:02d}"
+                mel.eval(hexa_curve)
+                cmds.rename(crv_name)
+                color_curve(crv_name, 0.0, 1.0, 1.0)
+                sub_ik_ctrl_main_grp, sub_ik_ctrl_conn_grp = create_grp_hierarchy(crv_name)
+                sub_ik_ctrl_conn_grp = f"{sub_ik_ctrl_main_grp}|{sub_ik_ctrl_conn_grp}"
+                sub_ik_ctrl_main_grps.append(sub_ik_ctrl_main_grp)
+                # orient_node_to_surface(sub_ik_ctrl_main_grp, main_nurbs, sub_span_u_value)
+
+                jt_name = f"{name}_sub_ik_jnt_{start_ctrl:02d}"
+                cmds.joint(n=jt_name, radius=.3)
+                sub_ik_jnt_main_grp, _ = create_grp_hierarchy(jt_name, crv_name)
+                sub_ik_jnt_main_grps.append(sub_ik_jnt_main_grp)
+                cmds.parentConstraint(crv_name, jt_name, mo=True)
+                start_ctrl = start_ctrl + 1
+                create_connection_with_nurbs_plane(sub_ik_ctrl_conn_grp, sub_span_u_value, sub_ctrl_surface)
+
+        lower_span_u_value = higher_u_value
+        higher_u_value = higher_u_value + span_u_value
+
+    cmds.select(sub_ik_jnt_main_grps)
+    mel.eval("doGroup 0 1 1;")
+    cmds.rename(f'{name}_sub_ik_jnt_grp')
+    cmds.select()
+    cmds.select(sub_ik_ctrl_main_grps)
+    mel.eval("doGroup 0 1 1;")
+    cmds.rename(f'{name}_sub_ik_ctrl_grp')
+    return sub_ctrl_surface
+
+
+# def orient_node_to_surface(node, nurbs, u, v=0.5):
+#     """
+#     Orient a transform node so it is perpendicular to a nurbsSurface
+#     using the surface normal and tangent vectors.
+#     """
+#
+#     # Get DAG Path
+#     sel = om.MSelectionList()
+#     sel.add(nurbs)
+#     dag = sel.getDagPath(0)
+#     surf = om.MFnNurbsSurface(dag)
+#
+#     # Get point, normal, and tangent
+#     point = surf.getPointAtParam(u, v, om.MSpace.kWorld)
+#     normal = surf.normal(u, v, om.MSpace.kWorld)    # perpendicular direction
+#     tangent = surf.tangentV(u, v, om.MSpace.kWorld) # forward direction
+#
+#     # Build orthonormal basis
+#     normal.normalize()
+#     tangent.normalize()
+#     side = tangent ^ normal  # cross product
+#     side.normalize()
+#
+#     # Recalculate tangent to guarantee orthogonality
+#     tangent = normal ^ side
+#     tangent.normalize()
+#
+#     # Build matrix rows
+#     mat_list = [
+#         side.x,    side.y,    side.z,    0,
+#         normal.x,  normal.y,  normal.z,  0,
+#         tangent.x, tangent.y, tangent.z, 0,
+#         point.x,   point.y,   point.z,   1
+#     ]
+#     m = om.MMatrix(mat_list)
+#
+#     # Apply to transform
+#     mfn = om.MFnTransform(cmds.ls(node, long=True)[0])
+#     mfn.setTransformation(om.MTransformationMatrix(m))
+
+
+def create_connection_with_nurbs_plane(main_grp, span_u_value, sub_ctrl_surface):
+    pt_surface_node = cmds.createNode("pointOnSurfaceInfo")
+    four_by_four_matrix_node = cmds.createNode("fourByFourMatrix")
+    mult_matrix_node = cmds.createNode("multMatrix")
+    decompose_matrix_node = cmds.createNode("decomposeMatrix")
+
+    scene_to_cm_str = cmds.convertUnit("1", toUnit="cm")
+    scene_to_cm = float(scene_to_cm_str.replace("cm", ""))
+
+    # creating multiply-divide node to fix difference between scene working uint and default working uint
+    unit_md = cmds.createNode("multiplyDivide")
+    cmds.setAttr(unit_md + ".operation", 1)
+    cmds.setAttr(unit_md + ".input2X", scene_to_cm)
+    cmds.setAttr(unit_md + ".input2Y", scene_to_cm)
+    cmds.setAttr(unit_md + ".input2Z", scene_to_cm)
+    cmds.setAttr(pt_surface_node + ".parameterU", span_u_value)
+    cmds.setAttr(pt_surface_node + ".parameterV", 0.5)
+    cmds.connectAttr(sub_ctrl_surface + ".worldSpace", pt_surface_node + ".inputSurface", force=True)
+
+    # Normal vectors
+    cmds.connectAttr(pt_surface_node + ".normalX", four_by_four_matrix_node + ".in00", force=True)
+    cmds.connectAttr(pt_surface_node + ".normalY", four_by_four_matrix_node + ".in01", force=True)
+    cmds.connectAttr(pt_surface_node + ".normalZ", four_by_four_matrix_node + ".in02", force=True)
+
+    cmds.connectAttr(pt_surface_node + ".normalizedTangentUX", four_by_four_matrix_node + ".in10", force=True)
+    cmds.connectAttr(pt_surface_node + ".normalizedTangentUY", four_by_four_matrix_node + ".in11", force=True)
+    cmds.connectAttr(pt_surface_node + ".normalizedTangentUZ", four_by_four_matrix_node + ".in12", force=True)
+
+    cmds.connectAttr(pt_surface_node + ".normalizedTangentVX", four_by_four_matrix_node + ".in20", force=True)
+    cmds.connectAttr(pt_surface_node + ".normalizedTangentVY", four_by_four_matrix_node + ".in21", force=True)
+    cmds.connectAttr(pt_surface_node + ".normalizedTangentVZ", four_by_four_matrix_node + ".in22", force=True)
+
+    # Position converted from scene units → cm
+    cmds.connectAttr(pt_surface_node + ".positionX", unit_md + ".input1X", force=True)
+    cmds.connectAttr(pt_surface_node + ".positionY", unit_md + ".input1Y", force=True)
+    cmds.connectAttr(pt_surface_node + ".positionZ", unit_md + ".input1Z", force=True)
+    cmds.connectAttr(unit_md + ".outputX", four_by_four_matrix_node + ".in30", force=True)
+    cmds.connectAttr(unit_md + ".outputY", four_by_four_matrix_node + ".in31", force=True)
+    cmds.connectAttr(unit_md + ".outputZ", four_by_four_matrix_node + ".in32", force=True)
+
+    cmds.connectAttr(four_by_four_matrix_node + ".output", mult_matrix_node + ".matrixIn[0]", force=True)
+    cmds.connectAttr(main_grp + ".parentInverseMatrix[0]", mult_matrix_node + ".matrixIn[1]", force=True)
+    cmds.connectAttr(mult_matrix_node + ".matrixSum", decompose_matrix_node + ".inputMatrix")
+
+    cmds.connectAttr(decompose_matrix_node + ".outputTranslate", main_grp + ".translate")
+    cmds.connectAttr(decompose_matrix_node + ".outputRotate", main_grp + ".rotate")
+
+
+def create_fk_setup(name, joint_count, nurbs_surface):
+    cmds.rebuildSurface(nurbs_surface, su=joint_count, sv=1)
+    fk_joints = []
+    cmds.select(clear=True)
+    last_jt_name, last_ctrl_name = None, None
+    span_u_multiper = 1 / joint_count
+    for jt in range(joint_count + 1):
+        jt_name = f"{name}_fk_jnt_{(jt + 1):02d}"
+        crv_name = f"{name}_fk_ctrl_{(jt + 1):02d}"
+        mel.eval("circle -ch on -o on -nr 0 0 1 -r 2 ;")
+        cmds.rename(crv_name)
+        color_curve(crv_name, .5, 0.5, 0.5)
+        main_grp, _ = create_grp_hierarchy(crv_name)
+        span_u_value = span_u_multiper * jt
+        follicle_node = create_follicle_system(nurbs_surface, span_u_value)
+        constraint_node = cmds.pointConstraint(follicle_node, main_grp)
+        cmds.delete(constraint_node)
+        cmds.delete(follicle_node)
+        if last_ctrl_name:
+            cmds.parent(main_grp, last_ctrl_name)
+        cmds.joint(n=jt_name, radius=.3)
+        main_jt_grp, conn_jt_grp = create_grp_hierarchy(jt_name)
+        conn_jt_grp = f"{main_jt_grp}|{conn_jt_grp}"
+        if last_jt_name:
+            cmds.parent(main_jt_grp, last_jt_name)
+        cmds.parentConstraint(crv_name, conn_jt_grp)
+        last_jt_name = jt_name
+        last_ctrl_name = crv_name
+        fk_joints.append(jt_name)
+
+    create_skin(nurbs_surface, fk_joints)
+
+
+def create_skin(crv_name, jt_names):
+    objects = jt_names + [crv_name]
+    cmds.skinCluster(
+        *objects,
+        bindMethod=0,
+        weightDistribution=0,
+        maximumInfluences=5,
+        obeyMaxInfluences=True,
+        dropoffRate=4,
+        removeUnusedInfluence=True
+    )
+
+
+def wrap_up(name):
+    cmds.select("*_jnt_grp")
+    mel.eval("doGroup 0 1 1;")
+    cmds.rename(f"{name}_jnt_grp")
+    cmds.select("*_ctrl_grp")
+    mel.eval("doGroup 0 1 1;")
+    cmds.rename(f"{name}_ctrl_grp")
+
+
+
+def create_master_ctrl(name, loc1, loc2):
+    master_ctrl = cmds.curve(
+        d=1,
+        p=[
+            (-0.333333, -0.333333, 0),
+            (-0.333333, -1, 0),
+            (0.333333, -1, 0),
+            (0.333333, -0.333333, 0),
+            (1, -0.333333, 0),
+            (1, 0.333333, 0),
+            (0.333333, 0.333333, 0),
+            (0.333333, 1, 0),
+            (-0.333333, 1, 0),
+            (-0.333333, 0.333333, 0),
+            (-1, 0.333333, 0),
+            (-1, -0.333333, 0),
+            (-0.333333, -0.333333, 0),
+        ],
+        k=list(range(13)),
+        name=f"{name}_master_ctrl"
+    )
+
+    mel.eval("doGroup 0 1 1;")
+    cmds.rename(f"{name}_master_ctrl_offset_grp")
+    mel.eval("doGroup 0 1 1;")
+    master_grp_name = f"{name}_master_ctrl_grp"
+    cmds.rename(master_grp_name)
+
+
+    pos = cmds.xform(loc1, q=True, ws=True, t=True)
+    cmds.xform(master_grp_name, ws=True, t=pos)
+
+    cmds.delete(cmds.aimConstraint(
+        loc2, master_grp_name,
+        aimVector=(0, 0, 1),  # curve's +Z will aim at loc2
+        upVector=(0, 1, 0),  # curve's +Y is the “up”
+        worldUpType="object",
+        worldUpObject=loc1
+    ))
+
+
+create_plane_between_locators("locator2", "locator1", "ribbon", joint_count=41)
