@@ -80,8 +80,9 @@ class MayaOperations():
     def create_surface_attach(self):
         mel.eval("cMuscleSurfAttachSetup")
 
-    def set_attribute(self, attribute, value):
-        cmds.setAttr(attribute, value)
+    def set_attribute(self, attribute, *args,):
+        print("args", *args)
+        cmds.setAttr(attribute, *args)
 
     def create_grp(self):
         mel.eval("doGroup 0 1 1")
@@ -210,6 +211,7 @@ class MayaOperations():
                     cpm = cmds.createNode("closestPointOnMesh", n="closetPointOnMesh")
                     cmds.connectAttr(f"{selected_objects[-1]}.outMesh", f"{cpm}.inMesh", force=True)
                     cmds.connectAttr(f"{selected_objects[-1]}.worldMatrix", f"{cpm}.inputMatrix", force=True)
+                    print("Test", *ctrl_pos, cpm)
                     self.set_attribute(f"{cpm}.inPosition", *ctrl_pos)
 
                 if cpm:
@@ -228,7 +230,7 @@ class MayaOperations():
                 self.create_grp()
                 self.rename_selected_object(f"{selected_objects[obj]}_offset_grp")
                 grp = self.get_selected_objects()
-                self.parent_constrain(follicle_node, grp, mo=True)
+                self.parent_constrain(follicle_node, grp, mo_flag=True)
 
     def create_uv_pin_setup(self, shape_node, sel, sel_uv_pin=None):
         uv = cmds.polyListComponentConversion(sel, fromVertex=True, toUV=True)
